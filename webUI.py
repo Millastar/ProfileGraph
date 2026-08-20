@@ -41,7 +41,8 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("project2.web")
 
-QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+QWEN_BASE_URL = (os.getenv("QWEN_BASE_URL") or DEFAULT_QWEN_BASE_URL).rstrip("/")
 CHAT_MODEL = "qwen-plus"
 EMBEDDING_MODEL = "text-embedding-v4"
 EMBEDDING_DIMENSIONS = 1024
