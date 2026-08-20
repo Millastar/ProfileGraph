@@ -1,0 +1,10 @@
+# Deployment dependencies. Shared versions follow requirements1.txt.
+gradio==5.32.1
+langchain-core==0.3.86
+langchain-openai==0.3.6
+langchain-text-splitters==0.3.11
+langgraph==0.2.74
+numpy==1.26.4
+openai==1.109.1
+pypdf==6.0.0
+python-dotenv==1.2.2
