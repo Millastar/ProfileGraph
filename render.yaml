@@ -10,5 +10,7 @@ services:
     envVars:
       - key: APP_ACCESS_CODE
         sync: false
+      - key: QWEN_BASE_URL
+        sync: false
       - key: GRADIO_ANALYTICS_ENABLED
         value: "False"
