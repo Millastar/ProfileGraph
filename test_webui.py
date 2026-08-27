@@ -38,6 +38,25 @@ class AlwaysIrrelevantModel:
         return AIMessage(content=webUI.NOT_FOUND_RESPONSE)
 
 
+class FakePdfPage:
+    def __init__(self, text):
+        self.text = text
+
+    def extract_text(self):
+        return self.text
+
+
+class FakePdfReader:
+    is_encrypted = False
+
+    def __init__(self, _path):
+        self.pages = [
+            FakePdfPage("杭州二\n档案编号：DEMO-STU-002\n学生姓名\n杭州二\n基本信息"),
+            FakePdfPage("四、学业成绩\n数学\n105 / 120\n语文\n112 / 120"),
+            FakePdfPage("杭州三\n档案编号：DEMO-STU-003\n学生姓名\n杭州三\n基本信息"),
+        ]
+
+
 class WebUiTests(unittest.TestCase):
     def test_access_code_is_required_and_compared_exactly(self):
         with patch.dict(os.environ, {"APP_ACCESS_CODE": "demo-code"}, clear=False):
@@ -76,6 +95,44 @@ class WebUiTests(unittest.TestCase):
         ]
         ranked = webUI._rank_chunks([0.9, 0.1], documents, top_k=1)
         self.assertEqual(ranked[0][1]["content"], "苹果")
+
+    def test_pdf_continuation_page_inherits_student_ownership(self):
+        with patch.object(webUI, "PdfReader", FakePdfReader):
+            chunks = webUI._extract_pdf(Path("unused.pdf"), "学生档案.pdf")
+        page_two = [chunk for chunk in chunks if chunk["page"] == 2]
+        self.assertTrue(page_two)
+        self.assertTrue(all(chunk["student_name"] == "杭州二" for chunk in page_two))
+        self.assertTrue(all(chunk["record_id"] == "DEMO-STU-002" for chunk in page_two))
+        self.assertTrue(all("所属学生：杭州二" in chunk["search_text"] for chunk in page_two))
+
+    def test_explicit_student_name_hard_filters_other_students(self):
+        documents = [{
+            "vectors": webUI._normalize_rows([[1.0, 0.0], [0.7, 0.7]]),
+            "chunks": [
+                {"student_name": "杭州一", "record_id": "DEMO-STU-001", "content": "语文 102"},
+                {"student_name": "杭州二", "record_id": "DEMO-STU-002", "content": "语文 112"},
+            ],
+        }]
+        scope = webUI._resolve_record_scope("杭州二最近一学期的语文成绩", documents)
+        ranked = webUI._rank_scoped_chunks([1.0, 0.0], documents, record_scope=scope)
+        self.assertEqual(scope, {"DEMO-STU-002"})
+        self.assertEqual([chunk["student_name"] for _, chunk in ranked], ["杭州二"])
+
+    def test_rewritten_query_cannot_drop_original_student_scope(self):
+        documents = [{
+            "vectors": webUI._normalize_rows([[1.0, 0.0], [0.7, 0.7]]),
+            "chunks": [
+                {"filename": "档案.pdf", "page": 3, "student_name": "杭州一", "record_id": "DEMO-STU-001", "content": "数学 115"},
+                {"filename": "档案.pdf", "page": 5, "student_name": "杭州二", "record_id": "DEMO-STU-002", "content": "数学 105"},
+            ],
+        }]
+        with patch.object(webUI, "_embedding_model", return_value=FakeEmbeddingModel()):
+            context = webUI._retrieve_context(
+                "最近一学期的数学成绩", documents, "session-key", scope_query="杭州二的数学成绩"
+            )
+        self.assertIn("所属学生：杭州二", context)
+        self.assertIn("数学 105", context)
+        self.assertNotIn("杭州一", context)
 
     def test_document_delete_removes_vectors_and_metadata(self):
         documents = [
