@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 import webUI
 
@@ -15,6 +15,27 @@ class FakeGraph:
         metadata = {"langgraph_node": "generate"}
         yield AIMessageChunk(content="流式"), metadata
         yield AIMessageChunk(content="回复"), metadata
+
+
+class FakeEmbeddingModel:
+    def embed_query(self, _query):
+        return [1.0, 0.0]
+
+
+class AlwaysIrrelevantModel:
+    def __init__(self):
+        self.grade_calls = 0
+        self.rewrite_calls = 0
+
+    def invoke(self, messages):
+        prompt = messages[0].content
+        if "相关性评估器" in prompt:
+            self.grade_calls += 1
+            return AIMessage(content='{"relevant": false}')
+        if "查询改写器" in prompt:
+            self.rewrite_calls += 1
+            return AIMessage(content=f"第 {self.rewrite_calls} 次改写查询")
+        return AIMessage(content=webUI.NOT_FOUND_RESPONSE)
 
 
 class WebUiTests(unittest.TestCase):
@@ -63,6 +84,47 @@ class WebUiTests(unittest.TestCase):
         ]
         kept, _component_update, _status = webUI.delete_document("a", documents)
         self.assertEqual([document["id"] for document in kept], ["b"])
+
+    def test_relevance_parser_accepts_only_strict_true_json(self):
+        self.assertTrue(webUI._parse_relevance('{"relevant": true}'))
+        self.assertTrue(webUI._parse_relevance('```json\n{"relevant": true}\n```'))
+        self.assertFalse(webUI._parse_relevance('{"relevant": false}'))
+        self.assertFalse(webUI._parse_relevance("看起来相关"))
+
+    def test_retrieval_routes_to_rewrite_until_retry_limit(self):
+        state = {"relevant": False, "retry_count": 0}
+        self.assertEqual(webUI._next_retrieval_step(state), "rewrite")
+        state["retry_count"] = webUI.RETRIEVAL_RETRY_LIMIT
+        self.assertEqual(webUI._next_retrieval_step(state), "generate")
+        state = {"relevant": True, "retry_count": 0}
+        self.assertEqual(webUI._next_retrieval_step(state), "generate")
+
+    def test_empty_query_rewrite_falls_back_to_previous_query(self):
+        self.assertEqual(webUI._clean_rewritten_query("", "档案编号 A-001"), "档案编号 A-001")
+        self.assertEqual(webUI._clean_rewritten_query('"查询 A-001 的地址"', "fallback"), "查询 A-001 的地址")
+
+    def test_graph_stops_after_three_rewrite_retries(self):
+        documents = [{
+            "vectors": webUI._normalize_rows([[1.0, 0.0]]),
+            "chunks": [{"filename": "档案.txt", "page": None, "content": "无关内容"}],
+        }]
+        model = AlwaysIrrelevantModel()
+        initial_state = {
+            "messages": [webUI.HumanMessage(content="查询 A-001 的地址")],
+            "original_query": "查询 A-001 的地址",
+            "search_query": "查询 A-001 的地址",
+            "context": "",
+            "relevant": False,
+            "retry_count": 0,
+        }
+        with patch.object(webUI, "_chat_model", return_value=model), patch.object(
+            webUI, "_embedding_model", return_value=FakeEmbeddingModel()
+        ):
+            result = webUI._build_rag_graph("session-key", documents).invoke(initial_state)
+        self.assertEqual(model.grade_calls, 4)
+        self.assertEqual(model.rewrite_calls, webUI.RETRIEVAL_RETRY_LIMIT)
+        self.assertEqual(result["retry_count"], webUI.RETRIEVAL_RETRY_LIMIT)
+        self.assertEqual(result["messages"][-1].content, webUI.NOT_FOUND_RESPONSE)
 
     def test_send_message_yields_each_model_chunk(self):
         conversations, conversation_id = webUI._initial_conversations()
